@@ -31,6 +31,10 @@ func getVersionMetadataCmd() *cobra.Command {
 				return err
 			}
 
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			var lastErr error
 			var acc appstore.Account
 

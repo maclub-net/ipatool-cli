@@ -17,6 +17,14 @@ var _ = Describe("Login command", func() {
 	BeforeEach(func() {
 		previousDependencies := dependencies
 		DeferCleanup(func() { dependencies = previousDependencies })
+		previousStateDirectory := stateDirectoryPath
+		stateDirectoryPath = GinkgoT().TempDir()
+		DeferCleanup(func() { stateDirectoryPath = previousStateDirectory })
+		previousAccountProfile, previousSelectedAccountKey := accountProfile, selectedAccountKey
+		accountProfile, selectedAccountKey = "", ""
+		DeferCleanup(func() {
+			accountProfile, selectedAccountKey = previousAccountProfile, previousSelectedAccountKey
+		})
 		store = &fakeLoginAppStore{}
 		dependencies.AppStore = store
 		dependencies.Logger = log.NewLogger(log.Args{})

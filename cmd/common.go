@@ -53,8 +53,14 @@ func newLogger(format OutputFormat, verbose bool) log.Logger {
 
 // newCookieJar returns a new cookie jar instance.
 func newCookieJar(stateDirectory string) http.CookieJar {
+	return newCookieJarForAccount(stateDirectory, "")
+}
+
+// newCookieJarForAccount returns the cookie jar of an account; an empty key
+// selects the legacy single-account jar.
+func newCookieJarForAccount(stateDirectory, accountKey string) http.CookieJar {
 	return util.Must(cookiejar.New(&cookiejar.Options{
-		Filename: filepath.Join(stateDirectory, CookieJarFileName),
+		Filename: filepath.Join(stateDirectory, cookieJarFileName(accountKey)),
 	}))
 }
 
@@ -108,8 +114,10 @@ func initWithCommand(cmd *cobra.Command) {
 	dependencies.OS = operatingsystem.New()
 	dependencies.Machine = machine.New(machine.Args{OS: dependencies.OS})
 	stateDirectory := util.Must(prepareStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory()))
-	dependencies.CookieJar = newCookieJar(stateDirectory)
-	dependencies.Keychain = newKeychain(stateDirectory, interactive)
+	stateDirectoryPath = stateDirectory
+	selectedAccountKey = resolveAccountSelection(cmd)
+	dependencies.CookieJar = newScopedCookieJar(stateDirectory, &selectedAccountKey)
+	dependencies.Keychain = newScopedKeychain(newKeychain(stateDirectory, interactive), &selectedAccountKey)
 	dependencies.AppStore = appstore.NewAppStore(appstore.Args{
 		CookieJar:       dependencies.CookieJar,
 		OperatingSystem: dependencies.OS,

@@ -24,6 +24,10 @@ func mcpCmd() *cobra.Command {
 			initWithCommand(cmd)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 

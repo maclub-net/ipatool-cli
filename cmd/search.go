@@ -17,6 +17,10 @@ func searchCmd() *cobra.Command {
 		Short: "Search for iOS, iPadOS, tvOS, watchOS, visionOS, and macOS apps available on the App Store",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			infoResult, err := dependencies.AppStore.AccountInfo()
 			if err != nil {
 				return err

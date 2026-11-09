@@ -19,6 +19,8 @@ func authCmd() *cobra.Command {
 	cmd.AddCommand(loginCmd())
 	cmd.AddCommand(infoCmd())
 	cmd.AddCommand(revokeCmd())
+	cmd.AddCommand(listCmd())
+	cmd.AddCommand(useCmd())
 
 	return cmd
 }
@@ -54,6 +56,13 @@ func loginCmd() *cobra.Command {
 					return fmt.Errorf("failed to read password: %w", err)
 				}
 				password = value
+			}
+
+			// Key the credentials by the Apple ID being authenticated, not by a
+			// previously selected account, so signing in as another account cannot
+			// overwrite the selected one. An explicit --account keeps its slot.
+			if accountProfile == "" {
+				selectedAccountKey = resolveStoredAccountKey(email)
 			}
 
 			dependencies.Logger.Log().Msg("preparing authentication; the first login may take a few minutes")
@@ -96,6 +105,17 @@ func loginCmd() *cobra.Command {
 					Bool("success", true).
 					Send()
 
+				accountKey := normalizeAccountKey(selectedAccountKey)
+				if accountKey != "" {
+					if err := upsertAccountProfile(accountKey, output.Account.Email); err != nil {
+						return fmt.Errorf("failed to update account registry: %w", err)
+					}
+
+					if err := writeActiveAccountKey(accountKey); err != nil {
+						return fmt.Errorf("failed to set active account: %w", err)
+					}
+				}
+
 				return nil
 			},
 				retry.LastErrorOnly(true),
@@ -124,6 +144,10 @@ func infoCmd() *cobra.Command {
 		Use:   "info",
 		Short: "Show current account info",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			output, err := dependencies.AppStore.AccountInfo()
 			if err != nil {
 				return err
@@ -132,6 +156,7 @@ func infoCmd() *cobra.Command {
 			dependencies.Logger.Log().
 				Str("name", output.Account.Name).
 				Str("email", output.Account.Email).
+				Str("account", normalizeAccountKey(selectedAccountKey)).
 				Bool("success", true).
 				Send()
 
@@ -146,12 +171,103 @@ func revokeCmd() *cobra.Command {
 		Use:   "revoke",
 		Short: "Revoke your App Store credentials",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
+			accountKey := normalizeAccountKey(selectedAccountKey)
+
 			err := dependencies.AppStore.Revoke()
 			if err != nil {
 				return err
 			}
 
-			dependencies.Logger.Log().Bool("success", true).Send()
+			if accountKey != "" {
+				if err := removeAccountProfile(accountKey); err != nil {
+					return fmt.Errorf("failed to update account registry: %w", err)
+				}
+
+				active, err := readActiveAccountKey()
+				if err != nil {
+					return err
+				}
+
+				if active == accountKey {
+					if err := clearActiveAccountKey(); err != nil {
+						return err
+					}
+				}
+
+				if err := removeCookieJarFile(accountKey); err != nil {
+					return err
+				}
+			}
+
+			dependencies.Logger.Log().
+				Str("account", accountKey).
+				Bool("success", true).
+				Send()
+
+			return nil
+		},
+	}
+}
+
+// listCmd lists the stored account profiles.
+// nolint:wrapcheck
+func listCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List stored App Store accounts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			records, err := listAccountProfiles()
+			if err != nil {
+				return err
+			}
+
+			active, err := readActiveAccountKey()
+			if err != nil {
+				return err
+			}
+
+			dependencies.Logger.Log().
+				Str("activeAccount", active).
+				Interface("accounts", records).
+				Bool("success", true).
+				Send()
+
+			return nil
+		},
+	}
+}
+
+// useCmd sets the account used when no --account flag is given.
+// nolint:wrapcheck
+func useCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <account>",
+		Short: "Set the account used by default",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			accountKey := resolveStoredAccountKey(args[0])
+
+			exists, err := accountProfileExists(accountKey)
+			if err != nil {
+				return err
+			}
+
+			if !exists {
+				return fmt.Errorf("account not found: %s", args[0])
+			}
+
+			if err := writeActiveAccountKey(accountKey); err != nil {
+				return err
+			}
+
+			dependencies.Logger.Log().
+				Str("account", accountKey).
+				Bool("success", true).
+				Send()
 
 			return nil
 		},

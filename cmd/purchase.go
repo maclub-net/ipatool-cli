@@ -35,6 +35,10 @@ func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
 				return err
 			}
 
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			var lastErr error
 			var acc appstore.Account
 

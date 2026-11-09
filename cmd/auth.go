@@ -107,7 +107,20 @@ func loginCmd() *cobra.Command {
 
 				accountKey := normalizeAccountKey(selectedAccountKey)
 				if accountKey != "" {
-					if err := upsertAccountProfile(accountKey, output.Account.Email); err != nil {
+					region := ""
+
+					if output.Account.StoreFront != "" {
+						code, err := dependencies.AppStore.StorefrontCountryCode(output.Account.StoreFront)
+						if err != nil {
+							dependencies.Logger.Verbose().
+								Str("storeFront", output.Account.StoreFront).
+								Msg("failed to resolve the account region")
+						} else {
+							region = code
+						}
+					}
+
+					if err := upsertAccountProfile(accountKey, output.Account.Email, region, output.Account.StoreFront); err != nil {
 						return fmt.Errorf("failed to update account registry: %w", err)
 					}
 
@@ -153,10 +166,17 @@ func infoCmd() *cobra.Command {
 				return err
 			}
 
+			region := ""
+
+			if record, ok, err := accountProfileFor(selectedAccountKey); err == nil && ok {
+				region = record.Region
+			}
+
 			dependencies.Logger.Log().
 				Str("name", output.Account.Name).
 				Str("email", output.Account.Email).
 				Str("account", normalizeAccountKey(selectedAccountKey)).
+				Str("region", region).
 				Bool("success", true).
 				Send()
 
@@ -223,6 +243,13 @@ func listCmd() *cobra.Command {
 			records, err := listAccountProfiles()
 			if err != nil {
 				return err
+			}
+
+			if accountRegion != "" {
+				records, err = accountsInRegion(accountRegion)
+				if err != nil {
+					return err
+				}
 			}
 
 			active, err := readActiveAccountKey()

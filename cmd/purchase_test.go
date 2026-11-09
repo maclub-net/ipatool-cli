@@ -83,6 +83,10 @@ type fakePurchaseAppStore struct {
 	purchaseInput appstore.PurchaseInput
 }
 
+func (*fakePurchaseAppStore) StorefrontCountryCode(string) (string, error) {
+	return "", nil
+}
+
 func (*fakePurchaseAppStore) Login(input appstore.LoginInput) (appstore.LoginOutput, error) {
 	return appstore.LoginOutput{}, nil
 }

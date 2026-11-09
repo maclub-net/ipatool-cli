@@ -115,7 +115,7 @@ func initWithCommand(cmd *cobra.Command) {
 	dependencies.Machine = machine.New(machine.Args{OS: dependencies.OS})
 	stateDirectory := util.Must(prepareStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory()))
 	stateDirectoryPath = stateDirectory
-	selectedAccountKey = resolveAccountSelection(cmd)
+	selectedAccountKey, accountSelectionErr = resolveAccountSelection(cmd)
 	dependencies.CookieJar = newScopedCookieJar(stateDirectory, &selectedAccountKey)
 	dependencies.Keychain = newScopedKeychain(newKeychain(stateDirectory, interactive), &selectedAccountKey)
 	dependencies.AppStore = appstore.NewAppStore(appstore.Args{

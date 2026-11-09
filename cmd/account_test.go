@@ -24,10 +24,12 @@ var _ = Describe("Account profiles", func() {
 		directory = GinkgoT().TempDir()
 		stateDirectoryPath = directory
 		DeferCleanup(func() { stateDirectoryPath = previousStateDirectory })
-		previousAccountProfile, previousSelectedAccountKey := accountProfile, selectedAccountKey
-		accountProfile, selectedAccountKey = "", ""
+		previousAccountProfile, previousAccountRegion, previousSelectedAccountKey := accountProfile, accountRegion, selectedAccountKey
+		previousAccountSelectionErr := accountSelectionErr
+		accountProfile, accountRegion, selectedAccountKey, accountSelectionErr = "", "", "", nil
 		DeferCleanup(func() {
-			accountProfile, selectedAccountKey = previousAccountProfile, previousSelectedAccountKey
+			accountProfile, accountRegion, selectedAccountKey = previousAccountProfile, previousAccountRegion, previousSelectedAccountKey
+			accountSelectionErr = previousAccountSelectionErr
 		})
 		dependencies.Logger = log.NewLogger(log.Args{})
 	})
@@ -95,13 +97,15 @@ var _ = Describe("Account profiles", func() {
 
 	Describe("Registry", func() {
 		It("stores profiles with private permissions and resolves them by email", func() {
-			Expect(upsertAccountProfile("User@Example.com", "user@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("User@Example.com", "user@example.com", "jp", "143441-1,29")).To(Succeed())
 
 			records, err := listAccountProfiles()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(records).To(HaveLen(1))
 			Expect(records[0].Key).To(Equal("user@example.com"))
 			Expect(records[0].Email).To(Equal("user@example.com"))
+			Expect(records[0].Region).To(Equal("JP"))
+			Expect(records[0].StoreFront).To(Equal("143441-1,29"))
 
 			info, err := os.Stat(accountRegistryPath())
 			Expect(err).NotTo(HaveOccurred())
@@ -129,6 +133,34 @@ var _ = Describe("Account profiles", func() {
 			Expect(resolveStoredAccountKey("USER@example.com")).To(Equal("+8613912345678"))
 		})
 
+		It("keeps a known region when a later login cannot resolve it", func() {
+			Expect(upsertAccountProfile("user@example.com", "user@example.com", "JP", "143441-1,29")).To(Succeed())
+			Expect(upsertAccountProfile("user@example.com", "user@example.com", "", "")).To(Succeed())
+
+			record, ok, err := accountProfileFor("user@example.com")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(record.Region).To(Equal("JP"))
+			Expect(record.StoreFront).To(Equal("143441-1,29"))
+		})
+
+		It("filters accounts by region", func() {
+			Expect(upsertAccountProfile("us@example.com", "us@example.com", "us", "143441-1,29")).To(Succeed())
+			Expect(upsertAccountProfile("jp1@example.com", "jp1@example.com", "JP", "143462-1,29")).To(Succeed())
+			Expect(upsertAccountProfile("jp2@example.com", "jp2@example.com", "jp", "143462-1,29")).To(Succeed())
+			Expect(upsertAccountProfile("none@example.com", "none@example.com", "", "")).To(Succeed())
+
+			records, err := accountsInRegion("jp")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records).To(HaveLen(2))
+			Expect(records[0].Key).To(Equal("jp1@example.com"))
+			Expect(records[1].Key).To(Equal("jp2@example.com"))
+
+			records, err = accountsInRegion("de")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records).To(BeEmpty())
+		})
+
 		It("stores and clears the active account pointer", func() {
 			Expect(writeActiveAccountKey("User@Example.com")).To(Succeed())
 			active, err := readActiveAccountKey()
@@ -144,29 +176,76 @@ var _ = Describe("Account profiles", func() {
 
 	Describe("Account selection", func() {
 		BeforeEach(func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
-			Expect(upsertAccountProfile("second@example.com", "second@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
+			Expect(upsertAccountProfile("second@example.com", "second@example.com", "JP", "143462-1,29")).To(Succeed())
 		})
 
 		It("prefers the account flag", func() {
 			accountProfile = "second@example.com"
-			Expect(resolveAccountSelection(loginCmd())).To(Equal("second@example.com"))
+			key, err := resolveAccountSelection(loginCmd())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("second@example.com"))
 		})
 
 		It("uses the email flag", func() {
 			cmd := loginCmd()
 			Expect(cmd.Flags().Parse([]string{"--email", "SECOND@example.com"})).To(Succeed())
-			Expect(resolveAccountSelection(cmd)).To(Equal("second@example.com"))
+			key, err := resolveAccountSelection(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("second@example.com"))
+		})
+
+		It("uses the region flag when it matches one account", func() {
+			accountRegion = "jp"
+			key, err := resolveAccountSelection(searchCmd())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("second@example.com"))
+		})
+
+		It("prefers the account flag over the region flag", func() {
+			accountProfile = "first@example.com"
+			accountRegion = "JP"
+			key, err := resolveAccountSelection(searchCmd())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("first@example.com"))
+		})
+
+		It("rejects a region with no account", func() {
+			accountRegion = "DE"
+			_, err := resolveAccountSelection(searchCmd())
+			Expect(err).To(MatchError(`no account in region DE; run "ipatool auth list" to see stored accounts`))
+		})
+
+		It("requires an account when several share a region", func() {
+			Expect(upsertAccountProfile("second-jp@example.com", "second-jp@example.com", "JP", "143462-1,29")).To(Succeed())
+
+			accountRegion = "JP"
+			_, err := resolveAccountSelection(searchCmd())
+			Expect(err).To(MatchError(
+				"multiple accounts in region JP; select one with --account (second-jp@example.com, second@example.com)",
+			))
+		})
+
+		It("reports an ambiguous region when the command runs", func() {
+			Expect(upsertAccountProfile("second-jp@example.com", "second-jp@example.com", "JP", "143462-1,29")).To(Succeed())
+
+			accountRegion = "JP"
+			selectedAccountKey, accountSelectionErr = resolveAccountSelection(searchCmd())
+			Expect(ensureSelectedAccountKey()).To(MatchError(ContainSubstring("multiple accounts in region JP")))
 		})
 
 		It("falls back to the active account", func() {
 			Expect(writeActiveAccountKey("first@example.com")).To(Succeed())
-			Expect(resolveAccountSelection(searchCmd())).To(Equal("first@example.com"))
+			key, err := resolveAccountSelection(searchCmd())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("first@example.com"))
 		})
 
 		It("ignores an active account that is not registered", func() {
 			Expect(os.WriteFile(activeAccountPath(), []byte("third@example.com"), 0o600)).To(Succeed())
-			Expect(resolveAccountSelection(searchCmd())).To(BeEmpty())
+			key, err := resolveAccountSelection(searchCmd())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(BeEmpty())
 		})
 
 		It("requires a selection once profiles exist", func() {
@@ -192,7 +271,7 @@ var _ = Describe("Account profiles", func() {
 
 	Describe("Login command", func() {
 		It("keys credentials by the entered Apple ID instead of the active account", func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
 			Expect(writeActiveAccountKey("first@example.com")).To(Succeed())
 			selectedAccountKey = "first@example.com"
 
@@ -218,7 +297,7 @@ var _ = Describe("Account profiles", func() {
 		})
 
 		It("keeps an explicitly selected account slot", func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
 			accountProfile = "first@example.com"
 			selectedAccountKey = "first@example.com"
 			dependencies.AppStore = &fakeLoginAppStore{}
@@ -230,11 +309,57 @@ var _ = Describe("Account profiles", func() {
 			Expect(cmd.Execute()).To(Succeed())
 			Expect(selectedAccountKey).To(Equal("first@example.com"))
 		})
+
+		It("records the region resolved from the storefront", func() {
+			store := &fakeLoginAppStore{
+				output: appstore.LoginOutput{
+					Account: appstore.Account{Email: "first@example.com", StoreFront: "143462-1,29"},
+				},
+				storeFront: "JP",
+			}
+			dependencies.AppStore = store
+
+			cmd := loginCmd()
+			cmd.SetContext(context.WithValue(context.Background(), interactiveKey, false))
+			cmd.SetArgs([]string{"--email", "first@example.com", "--password", "secret"})
+
+			Expect(cmd.Execute()).To(Succeed())
+			Expect(store.storeFrontInput).To(Equal("143462-1,29"))
+
+			record, ok, err := accountProfileFor("first@example.com")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(record.Region).To(Equal("JP"))
+			Expect(record.StoreFront).To(Equal("143462-1,29"))
+		})
+
+		It("keeps a known region when the storefront cannot be resolved", func() {
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "JP", "143462-1,29")).To(Succeed())
+
+			store := &fakeLoginAppStore{
+				output: appstore.LoginOutput{
+					Account: appstore.Account{Email: "first@example.com", StoreFront: "143462-1,29"},
+				},
+				storeFrontErr: errors.New("mapping unavailable"),
+			}
+			dependencies.AppStore = store
+
+			cmd := loginCmd()
+			cmd.SetContext(context.WithValue(context.Background(), interactiveKey, false))
+			cmd.SetArgs([]string{"--email", "first@example.com", "--password", "secret"})
+
+			Expect(cmd.Execute()).To(Succeed())
+
+			record, ok, err := accountProfileFor("first@example.com")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(record.Region).To(Equal("JP"))
+		})
 	})
 
 	Describe("Revoke command", func() {
 		It("removes the profile, active pointer, and cookie jar", func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
 			Expect(writeActiveAccountKey("first@example.com")).To(Succeed())
 			selectedAccountKey = "first@example.com"
 			jarPath := filepath.Join(directory, cookieJarFileName(selectedAccountKey))
@@ -268,7 +393,7 @@ var _ = Describe("Account profiles", func() {
 
 	Describe("Use command", func() {
 		BeforeEach(func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
 		})
 
 		It("sets the active account by email", func() {
@@ -293,7 +418,7 @@ var _ = Describe("Account profiles", func() {
 
 	Describe("Command guards", func() {
 		It("refuses account commands when profiles exist but none is selected", func() {
-			Expect(upsertAccountProfile("first@example.com", "first@example.com")).To(Succeed())
+			Expect(upsertAccountProfile("first@example.com", "first@example.com", "US", "143441-1,29")).To(Succeed())
 
 			cmd := searchCmd()
 			cmd.SetArgs([]string{"example"})

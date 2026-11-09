@@ -19,6 +19,8 @@ type AppStore interface {
 	Login(input LoginInput) (LoginOutput, error)
 	// AccountInfo returns the information of the authenticated account.
 	AccountInfo() (AccountInfoOutput, error)
+	// StorefrontCountryCode returns the country code of a storefront header.
+	StorefrontCountryCode(storeFront string) (string, error)
 	// Revoke revokes the active credentials.
 	Revoke() error
 	// Lookup looks apps up by bundle identifier or numeric app ID.

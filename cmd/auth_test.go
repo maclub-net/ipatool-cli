@@ -102,13 +102,23 @@ var _ = Describe("Login command", func() {
 
 type fakeLoginAppStore struct {
 	appstore.AppStore
-	input      appstore.LoginInput
-	loginCalls int
+	input           appstore.LoginInput
+	loginCalls      int
+	output          appstore.LoginOutput
+	storeFront      string
+	storeFrontErr   error
+	storeFrontInput string
 }
 
 func (f *fakeLoginAppStore) Login(input appstore.LoginInput) (appstore.LoginOutput, error) {
 	f.input = input
 	f.loginCalls++
 
-	return appstore.LoginOutput{}, nil
+	return f.output, nil
+}
+
+func (f *fakeLoginAppStore) StorefrontCountryCode(storeFront string) (string, error) {
+	f.storeFrontInput = storeFront
+
+	return f.storeFront, f.storeFrontErr
 }

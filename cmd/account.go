@@ -23,6 +23,13 @@ const keychainAccountKey = "account"
 // accountProfile is the account slot explicitly selected with --account.
 var accountProfile string
 
+// accountRegion selects the account of a region when it is the only one.
+var accountRegion string
+
+// accountSelectionErr records why the requested account could not be selected;
+// commands that need an account report it when they run.
+var accountSelectionErr error
+
 // selectedAccountKey is the account currently in use. The scoped keychain and
 // cookie jar hold a pointer to it so a login that discovers the account key
 // after initialization still writes to the right slot.
@@ -33,9 +40,11 @@ var selectedAccountKey string
 var stateDirectoryPath string
 
 type accountProfileRecord struct {
-	Key       string    `json:"key"`
-	Email     string    `json:"email"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Key        string    `json:"key"`
+	Email      string    `json:"email"`
+	Region     string    `json:"region,omitempty"`
+	StoreFront string    `json:"storeFront,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type accountRegistry struct {
@@ -212,7 +221,7 @@ func saveAccountRegistry(registry accountRegistry) error {
 	return nil
 }
 
-func upsertAccountProfile(accountKey, email string) error {
+func upsertAccountProfile(accountKey, email, region, storeFront string) error {
 	accountKey = normalizeAccountKey(accountKey)
 	if accountKey == "" {
 		accountKey = normalizeAccountKey(email)
@@ -227,11 +236,21 @@ func upsertAccountProfile(accountKey, email string) error {
 		return err
 	}
 
-	registry.Accounts[accountKey] = accountProfileRecord{
-		Key:       accountKey,
-		Email:     strings.TrimSpace(email),
-		UpdatedAt: time.Now().UTC(),
+	record := registry.Accounts[accountKey]
+	record.Key = accountKey
+	record.Email = strings.TrimSpace(email)
+	record.UpdatedAt = time.Now().UTC()
+
+	// A login that cannot resolve the region must not erase what is known.
+	if region = normalizeRegion(region); region != "" {
+		record.Region = region
 	}
+
+	if storeFront = strings.TrimSpace(storeFront); storeFront != "" {
+		record.StoreFront = storeFront
+	}
+
+	registry.Accounts[accountKey] = record
 
 	return saveAccountRegistry(registry)
 }
@@ -372,37 +391,108 @@ func removeCookieJarFile(accountKey string) error {
 	return nil
 }
 
+func normalizeRegion(value string) string {
+	return strings.ToUpper(strings.TrimSpace(value))
+}
+
+func accountsInRegion(region string) ([]accountProfileRecord, error) {
+	registry, err := loadAccountRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	region = normalizeRegion(region)
+	records := make([]accountProfileRecord, 0, len(registry.Accounts))
+
+	for _, record := range registry.Accounts {
+		if normalizeRegion(record.Region) == region {
+			records = append(records, record)
+		}
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Key < records[j].Key
+	})
+
+	return records, nil
+}
+
+func accountProfileFor(accountKey string) (accountProfileRecord, bool, error) {
+	registry, err := loadAccountRegistry()
+	if err != nil {
+		return accountProfileRecord{}, false, err
+	}
+
+	record, ok := registry.Accounts[normalizeAccountKey(accountKey)]
+
+	return record, ok, nil
+}
+
+// resolveRegionSelection selects an account of a region only when it is
+// unambiguous; several accounts may share a region.
+func resolveRegionSelection(region string) (string, error) {
+	region = normalizeRegion(region)
+
+	records, err := accountsInRegion(region)
+	if err != nil {
+		return "", err
+	}
+
+	if len(records) == 0 {
+		return "", fmt.Errorf("no account in region %s; run \"ipatool auth list\" to see stored accounts", region)
+	}
+
+	if len(records) > 1 {
+		keys := make([]string, 0, len(records))
+		for _, record := range records {
+			keys = append(keys, record.Key)
+		}
+
+		return "", fmt.Errorf("multiple accounts in region %s; select one with --account (%s)", region, strings.Join(keys, ", "))
+	}
+
+	return records[0].Key, nil
+}
+
 // resolveAccountSelection returns the account key for the running command.
-func resolveAccountSelection(cmd *cobra.Command) string {
+func resolveAccountSelection(cmd *cobra.Command) (string, error) {
 	if accountProfile != "" {
-		return resolveStoredAccountKey(accountProfile)
+		return resolveStoredAccountKey(accountProfile), nil
+	}
+
+	if accountRegion != "" {
+		return resolveRegionSelection(accountRegion)
 	}
 
 	if emailFlag := cmd.Flags().Lookup("email"); emailFlag != nil {
 		if email := normalizeAccountKey(emailFlag.Value.String()); email != "" {
-			return resolveStoredAccountKey(email)
+			return resolveStoredAccountKey(email), nil
 		}
 	}
 
 	active, err := readActiveAccountKey()
 	if err != nil || active == "" {
-		return ""
+		return "", nil
 	}
 
 	// An active account file left behind without a registry entry cannot be
 	// used, so fall back to the legacy single-account state instead.
 	registered, err := accountProfileExists(active)
 	if err != nil || !registered {
-		return ""
+		return "", nil
 	}
 
-	return active
+	return active, nil
 }
 
 // ensureSelectedAccountKey rejects a command that needs an account when more
 // than one account is stored but none was selected. Installations that predate
 // account profiles keep the legacy single-account behavior.
 func ensureSelectedAccountKey() error {
+	if accountSelectionErr != nil {
+		return accountSelectionErr
+	}
+
 	if accountProfile != "" {
 		exists, err := accountProfileExists(selectedAccountKey)
 		if err != nil {

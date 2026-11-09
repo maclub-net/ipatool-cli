@@ -39,6 +39,10 @@ func listPurchasesCmd() *cobra.Command {
 			return err
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureSelectedAccountKey(); err != nil {
+				return err
+			}
+
 			var lastErr error
 
 			return retry.Do(func() error {

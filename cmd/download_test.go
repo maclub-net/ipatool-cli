@@ -265,6 +265,10 @@ type fakeDownloadAppStore struct {
 	purchaseInputs   []appstore.PurchaseInput
 }
 
+func (f *fakeDownloadAppStore) StorefrontCountryCode(string) (string, error) {
+	return "", nil
+}
+
 func (f *fakeDownloadAppStore) Login(input appstore.LoginInput) (appstore.LoginOutput, error) {
 	f.loginInputs = append(f.loginInputs, input)
 

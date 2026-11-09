@@ -38,6 +38,12 @@ type storefrontGenrePage struct {
 	} `json:"storePlatformData"`
 }
 
+// StorefrontCountryCode returns the country code of a storefront header, such
+// as the one returned by a login.
+func (t *appstore) StorefrontCountryCode(storeFront string) (string, error) {
+	return t.countryCodeFromStoreFront(storeFront)
+}
+
 func (t *appstore) countryCodeFromStoreFront(storeFront string) (string, error) {
 	if err := t.discoverAvailableStorefronts(); err != nil {
 		return "", err
